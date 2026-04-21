@@ -1,0 +1,238 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-14  # arm64 runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install flask pywebview pyinstaller
+
+      - name: Build static ffmpeg (LGPL)
+        run: |
+          FFMPEG_TAG=$(git ls-remote --tags --refs https://git.ffmpeg.org/ffmpeg.git \
+            | awk -F/ '{print $NF}' \
+            | grep -E '^n[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+            | sort -V | tail -1)
+          if [ -z "$FFMPEG_TAG" ]; then
+            echo "Failed to determine latest FFmpeg release tag"; exit 1
+          fi
+          echo "Building FFmpeg $FFMPEG_TAG"
+          git clone --depth 1 --branch "$FFMPEG_TAG" https://git.ffmpeg.org/ffmpeg.git /tmp/ffmpeg-src
+          cd /tmp/ffmpeg-src
+          ./configure \
+            --enable-static --disable-shared \
+            --disable-gpl --disable-nonfree \
+            --enable-videotoolbox --enable-audiotoolbox \
+            --disable-doc --disable-ffplay --disable-network \
+            --disable-encoders --disable-decoders \
+            --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=av1 \
+            --disable-filters --disable-indevs --disable-outdevs \
+            --disable-libxcb --disable-xlib \
+            --arch=arm64 --cc=clang
+          make -j$(sysctl -n hw.ncpu)
+          cp ffmpeg ffprobe $GITHUB_WORKSPACE/
+
+      - name: Build .app
+        run: |
+          pyinstaller --windowed --name "Sentry Rewind" \
+            --add-data "static:static" --add-data "FFMPEG_LICENSE.txt:." \
+            --add-binary "ffmpeg:." --add-binary "ffprobe:." \
+            --hidden-import webview --hidden-import pkg_resources \
+            --osx-bundle-identifier com.sentryrewind.app main.py
+
+      - name: Fix bundle structure for Gatekeeper
+        run: |
+          APP="dist/Sentry Rewind.app"
+
+          # Mark as app bundle
+          /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$APP/Contents/Info.plist" 2>/dev/null || \
+          /usr/libexec/PlistBuddy -c "Set :CFBundlePackageType APPL" "$APP/Contents/Info.plist"
+          echo -n "APPL????" > "$APP/Contents/PkgInfo"
+
+          # Fix Python.framework structure — Apple requires symlinks, not copies
+          FW="$APP/Contents/Frameworks/Python.framework"
+          if [ -d "$FW/Versions/Current" ] && [ ! -L "$FW/Versions/Current" ]; then
+            # Remove the copy, replace with symlink
+            rm -rf "$FW/Versions/Current"
+            ln -s 3.12 "$FW/Versions/Current"
+            # Top-level must be symlinks into Versions/Current
+            rm -rf "$FW/Python" "$FW/Resources"
+            ln -s Versions/Current/Python "$FW/Python"
+            ln -s Versions/Current/Resources "$FW/Resources"
+          fi
+
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > certificate.p12
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" build.keychain
+          rm certificate.p12
+
+      - name: Create entitlements
+        run: |
+          cat > entitlements.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+            <true/>
+            <key>com.apple.security.cs.allow-jit</key>
+            <true/>
+            <key>com.apple.security.cs.disable-library-validation</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Sign .app
+        run: |
+          # Find the Developer ID signing identity
+          IDENTITY=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "Signing with: $IDENTITY"
+          # Sign all binaries inside the bundle first
+          find "dist/Sentry Rewind.app" -type f \( -name "*.so" -o -name "*.dylib" -o -name "ffmpeg" -o -name "ffprobe" \) \
+            -exec codesign --force --options runtime --sign "$IDENTITY" --entitlements entitlements.plist {} \;
+          # Sign the .app bundle
+          codesign --deep --force --options runtime \
+            --sign "$IDENTITY" \
+            --entitlements entitlements.plist \
+            "dist/Sentry Rewind.app"
+
+      - name: Notarize .app
+        env:
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          KEY_FILE=$(mktemp -t asc_key.XXXXXX.p8)
+          trap 'rm -f "$KEY_FILE"' EXIT
+          printf '%s' "$ASC_API_KEY_P8" > "$KEY_FILE"
+          ditto -c -k --keepParent "dist/Sentry Rewind.app" "Sentry Rewind.zip"
+          xcrun notarytool submit "Sentry Rewind.zip" \
+            --key "$KEY_FILE" \
+            --key-id "$ASC_KEY_ID" \
+            --issuer "$ASC_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "dist/Sentry Rewind.app"
+
+      - name: Zip signed .app
+        run: cd dist && ditto -c -k --sequesterRsrc --keepParent "Sentry Rewind.app" "../Sentry-Rewind-macOS-arm64.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: Sentry-Rewind-macOS-arm64.zip
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install flask pywebview pyinstaller
+
+      - name: Download static ffmpeg (LGPL, BtbN)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest" `
+            -Headers @{ "User-Agent" = "sentry-rewind-build" }
+
+          # Pick newest static LGPL win64 asset matching ffmpeg-n<ver>-latest-win64-lgpl-<ver>.zip
+          $candidates = foreach ($a in $release.assets) {
+            if ($a.name -match '^ffmpeg-n(\d+\.\d+)-latest-win64-lgpl-\1\.zip$') {
+              [pscustomobject]@{ Asset = $a; Version = [version]$Matches[1] }
+            }
+          }
+          $selected = $candidates | Sort-Object Version -Descending | Select-Object -First 1
+          if (-not $selected) { Write-Error "No matching stable LGPL asset in BtbN latest release"; exit 1 }
+          $asset = $selected.Asset
+          $checksumAsset = $release.assets | Where-Object { $_.name -eq "checksums.sha256" }
+          if (-not $checksumAsset) { Write-Error "No checksums.sha256 in release"; exit 1 }
+
+          Write-Host "Downloading $($asset.name)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile ffmpeg.zip
+          Invoke-WebRequest -Uri $checksumAsset.browser_download_url -OutFile checksums.sha256
+
+          # checksums.sha256 is standard sha256sum format: "<hash>  <filename>"
+          $line = Get-Content checksums.sha256 | Where-Object { $_ -match ("\s" + [regex]::Escape($asset.name) + "$") } | Select-Object -First 1
+          if (-not $line) { Write-Error "No checksum entry for $($asset.name) in checksums.sha256"; exit 1 }
+          $expected = (($line -split '\s+')[0]).ToLower()
+          $actual = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
+          if ($expected -ne $actual) {
+            Write-Error "SHA256 mismatch: expected $expected got $actual"; exit 1
+          }
+          Write-Host "SHA256 verified ($actual)"
+
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-dl
+          $dir = Get-ChildItem ffmpeg-dl | Select-Object -First 1
+          Copy-Item "$($dir.FullName)\bin\ffmpeg.exe" .
+          Copy-Item "$($dir.FullName)\bin\ffprobe.exe" .
+
+      - name: Verify LGPL license
+        shell: pwsh
+        run: |
+          .\ffmpeg.exe -version
+          $output = .\ffmpeg.exe -version 2>&1 | Out-String
+          if ($output -match "enable-gpl|enable-nonfree") { Write-Error "GPL or nonfree flags detected"; exit 1 }
+          Write-Host "LGPL confirmed"
+
+      - name: Build .exe
+        run: |
+          pyinstaller --windowed --name "Sentry Rewind" `
+            --add-data "static;static" --add-data "FFMPEG_LICENSE.txt;." `
+            --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." `
+            --hidden-import webview --hidden-import pkg_resources main.py
+
+      - name: Zip output
+        shell: pwsh
+        run: Compress-Archive -Path "dist\Sentry Rewind" -DestinationPath "Sentry-Rewind-Windows-x64.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: Sentry-Rewind-Windows-x64.zip
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/macos-arm64/Sentry-Rewind-macOS-arm64.zip
+            artifacts/windows-x64/Sentry-Rewind-Windows-x64.zip
+          generate_release_notes: true

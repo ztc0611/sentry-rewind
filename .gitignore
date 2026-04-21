@@ -1,0 +1,28 @@
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Bundled binaries (built/downloaded during CI or locally)
+ffmpeg
+ffprobe
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# Notes (local reference only)
+notes/
+
+# Dev tools
+dev.sh
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo

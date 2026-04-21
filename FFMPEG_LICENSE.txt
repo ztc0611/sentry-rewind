@@ -1,0 +1,28 @@
+FFmpeg Notice
+=============
+
+This application includes FFmpeg and FFprobe, licensed under the
+GNU Lesser General Public License version 2.1 (LGPLv2.1).
+
+FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
+
+Website: https://ffmpeg.org/
+Source code: https://git.ffmpeg.org/ffmpeg.git
+
+The binaries included in this application were built from FFmpeg source
+(commit 6c114bd, 2026-04-14) with the following configuration:
+
+  --enable-static --disable-shared --disable-gpl --disable-nonfree
+  --enable-videotoolbox --enable-audiotoolbox --disable-doc --disable-ffplay
+  --disable-network --disable-encoders --disable-decoders
+  --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=av1
+  --disable-filters --disable-indevs --disable-outdevs
+  --disable-libxcb --disable-xlib --arch=arm64
+
+License: LGPL version 2.1 or later
+
+The full text of the LGPL 2.1 license is available at:
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+
+The source code for the FFmpeg build used in this application can be
+obtained from https://git.ffmpeg.org/ffmpeg.git at the commit listed above.

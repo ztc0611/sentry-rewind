@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark light">
+<title>Sentry Rewind</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<style>
+:root {
+    --bg: #111; --bg-panel: #1a1a1a; --bg-cell: #0a0a0a; --bg-control: #161616;
+    --bg-btn: #2a2a2a; --bg-btn-hover: #3a3a3a; --bg-item-hover: #252525;
+    --bg-item-active: #1e2d3d;
+    --border: #333; --border-dim: #222; --border-ctrl: #2a2a2a;
+    --text: #eee; --text-dim: #888; --text-dimmer: #666; --text-dimmest: #555;
+    --text-muted: #ccc; --text-label: rgba(255,255,255,0.45);
+    --accent: #4a9eff; --accent-bg: #1e2d3d;
+    --event-red: #ff4a4a; --event-green: #4aff4a; --event-orange: #ffaa4a;
+    --track-bg: #333; --spinner-bg: #333;
+    --map-filter: invert(1) hue-rotate(180deg) brightness(0.8) contrast(1.2);
+    --loading-bg: #111;
+    --cal-day-bg: #1a1a1a; --cal-day-event: #1e2d3d; --cal-day-event-hover: #2a3d5a;
+    --preview-bg: #0a0a0a; --preview-item-bg: #111;
+    --speed-menu-bg: #2a2a2a; --speed-menu-border: #444;
+}
+@media (prefers-color-scheme: light) {
+    :root {
+        --bg: #f0f0f0; --bg-panel: #ffffff; --bg-cell: #e8e8e8; --bg-control: #f5f5f5;
+        --bg-btn: #e0e0e0; --bg-btn-hover: #d0d0d0; --bg-item-hover: #eee;
+        --bg-item-active: #dce8f5;
+        --border: #ccc; --border-dim: #ddd; --border-ctrl: #ddd;
+        --text: #222; --text-dim: #666; --text-dimmer: #888; --text-dimmest: #aaa;
+        --text-muted: #444; --text-label: rgba(0,0,0,0.5);
+        --accent: #2670c4; --accent-bg: #dce8f5;
+        --event-red: #d03030; --event-green: #30a030; --event-orange: #c07020;
+        --track-bg: #ccc; --spinner-bg: #ccc;
+        --map-filter: none;
+        --loading-bg: #f0f0f0;
+        --cal-day-bg: #f5f5f5; --cal-day-event: #dce8f5; --cal-day-event-hover: #c5d8ef;
+        --preview-bg: #e0e0e0; --preview-item-bg: #f0f0f0;
+        --speed-menu-bg: #fff; --speed-menu-border: #ccc;
+    }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: -apple-system, system-ui, sans-serif; display: flex; height: 100vh; overflow: hidden; }
+
+/* Sidebar */
+#sidebar {
+    width: 350px; min-width: 350px; background: var(--bg-control); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+}
+#sidebar-header {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+}
+#sidebar-header h2 { font-size: 15px; color: var(--text-muted); }
+#view-buttons { display: flex; gap: 4px; }
+#view-buttons button {
+    background: var(--bg-btn); border: none; color: var(--text-dimmer); padding: 5px 8px;
+    border-radius: 4px; cursor: pointer; font-size: 13px; line-height: 1;
+}
+#view-buttons button:hover { color: var(--text-muted); background: var(--bg-btn-hover); }
+#view-buttons button.active { color: var(--accent); background: var(--accent-bg); }
+
+#source-tabs { display: flex; border-bottom: 1px solid var(--border); }
+.source-tab {
+    flex: 1; padding: 10px 0; text-align: center; font-size: 12px; color: var(--text-dimmer);
+    cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s;
+    background: none; border-top: none; border-left: none; border-right: none;
+}
+.source-tab:hover { color: var(--text-dim); background: var(--bg-item-hover); }
+.source-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.source-tab .tab-count { font-size: 10px; color: var(--text-dimmest); margin-left: 4px; }
+.source-tab.active .tab-count { color: var(--accent); }
+#event-list { flex: 1; overflow-y: auto; }
+.event-item {
+    padding: 10px 16px; border-bottom: 1px solid var(--border-dim); cursor: pointer;
+    transition: background 0.15s; border-left: 3px solid transparent;
+}
+.event-item:hover { background: var(--bg-item-hover); }
+.event-item.active { background: var(--bg-item-active); border-left-color: var(--accent); }
+.event-item-inner { display: flex; gap: 10px; align-items: start; }
+.event-thumb { width: 64px; height: 42px; border-radius: 3px; object-fit: cover; flex-shrink: 0; background: var(--bg-cell); }
+.event-text { flex: 1; min-width: 0; }
+.event-time { font-size: 13px; margin: 0 0 3px; color: var(--text-muted); }
+.event-detail { font-size: 11px; color: var(--text-dim); }
+.event-open-btn {
+    background: none; border: none; color: var(--text-dimmest); cursor: pointer;
+    font-size: 14px; padding: 2px 4px; flex-shrink: 0; align-self: center;
+    opacity: 0; transition: opacity 0.15s;
+}
+.event-item:hover .event-open-btn { opacity: 1; }
+.event-open-btn:hover { color: var(--accent); }
+
+/* Main area */
+#main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+#status { padding: 6px 16px; background: var(--bg-control); border-bottom: 1px solid var(--border-ctrl); font-size: 12px; color: var(--text-dimmer); min-height: 30px; display: flex; align-items: center; }
+
+/* Panels */
+.main-panel { display: none !important; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; position: relative; }
+.main-panel.active { display: flex !important; }
+#welcome { align-items: center; justify-content: center; color: var(--text-dimmest); gap: 12px; }
+#welcome .welcome-title { font-size: 20px; color: var(--text-dim); }
+#welcome .welcome-sub { font-size: 13px; }
+#disconnected {
+    position: fixed; inset: 0; z-index: 200;
+    background: var(--bg); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px;
+}
+#disconnected.hidden { display: none; }
+#disconnected .disc-title { font-size: 22px; color: var(--text-dim); }
+#disconnected .disc-sub { font-size: 14px; color: var(--text-dimmest); }
+#disconnected .disc-spinner {
+    width: 24px; height: 24px; border: 2px solid var(--spinner-bg);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+/* Camera grid */
+#camera-grid {
+    flex: 1; display: flex; background: #000; min-height: 0; overflow: hidden;
+}
+#side-left, #side-right { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+#center-col {
+    display: flex; flex-direction: column;
+    aspect-ratio: 724 / 938; max-height: 100%; height: 100%;
+}
+@media (max-width: 1300px) {
+    #center-col { aspect-ratio: unset; flex: 2; min-width: 0; height: auto; max-height: none; }
+}
+/* 4-camera layout — HW3 doesn't record pillar cameras to the dashcam */
+#camera-grid.no-pillars { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+#camera-grid.no-pillars #side-left, #camera-grid.no-pillars #side-right, #camera-grid.no-pillars #center-col { display: contents; }
+#camera-grid.no-pillars .camera-cell[data-cam="left_pillar"],
+#camera-grid.no-pillars .camera-cell[data-cam="right_pillar"] { display: none; }
+#camera-grid.no-pillars .camera-cell[data-cam="front"] { order: 1; }
+#camera-grid.no-pillars .camera-cell[data-cam="back"] { order: 2; }
+#camera-grid.no-pillars .camera-cell[data-cam="left_repeater"] { order: 3; }
+#camera-grid.no-pillars .camera-cell[data-cam="right_repeater"] { order: 4; }
+.camera-cell {
+    position: relative; background: var(--bg-cell); overflow: hidden;
+    flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+}
+.camera-cell video {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%; object-fit: contain;
+}
+.camera-cell { cursor: pointer; }
+.camera-label {
+    position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%); z-index: 2;
+    text-align: center;
+    font-size: 10px; color: #fff; background: rgba(0,0,0,0.5);
+    padding: 1px 6px; border-radius: 3px;
+    pointer-events: none;
+}
+
+/* Buffering overlay per camera cell */
+.camera-cell .buffering-overlay {
+    display: none; position: absolute; inset: 0; z-index: 3;
+    background: rgba(0,0,0,0.6);
+    align-items: center; justify-content: center;
+    pointer-events: none;
+}
+.camera-cell.buffering .buffering-overlay { display: flex; }
+.buffering-overlay .mini-spinner {
+    width: 20px; height: 20px; border: 2px solid var(--spinner-bg);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+/* ========== Maximized camera view ========== */
+#viewer.maximized #camera-grid {
+    display: flex; flex-direction: column;
+}
+#viewer.maximized #side-left,
+#viewer.maximized #side-right,
+#viewer.maximized #center-col {
+    display: none;
+}
+/* Focused cell gets moved to #camera-grid directly by JS */
+#viewer.maximized > #camera-grid > .camera-cell.focused {
+    flex: 1; min-height: 0;
+}
+/* Preview row at the bottom */
+#preview-row {
+    display: none; height: 80px; min-height: 80px;
+    background: var(--bg-cell); gap: 2px; padding: 2px;
+    align-items: stretch;
+}
+#viewer.maximized #preview-row {
+    display: flex;
+}
+#preview-row > .camera-cell {
+    flex: 0 0 120px; min-height: 0; cursor: pointer;
+}
+#restore-btn {
+    flex: 0 0 auto; padding: 4px 12px;
+    background: var(--bg-btn); border: none; color: var(--text-label);
+    font-size: 10px; cursor: pointer; border-radius: 2px;
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 2px;
+}
+#restore-btn:hover { background: var(--bg-btn-hover); }
+#restore-icon { font-size: 22px; flex: 1; display: flex; align-items: center; }
+
+/* Controls */
+#controls {
+    padding: 10px 16px; background: var(--bg-control); border-top: 1px solid var(--border-ctrl);
+    display: flex; align-items: center; gap: 12px;
+}
+#controls button {
+    background: var(--bg-btn); border: none; color: var(--text-muted); padding: 6px 14px;
+    border-radius: 4px; cursor: pointer; font-size: 14px;
+}
+#controls button:hover { background: var(--bg-btn-hover); }
+#play-btn { width: 40px; height: 32px; padding: 0; text-align: center; display: flex; align-items: center; justify-content: center; }
+
+#timeline-wrap { flex: 1; position: relative; height: 28px; display: flex; align-items: center; }
+#timeline {
+    width: 100%; height: 28px; -webkit-appearance: none; appearance: none;
+    background: transparent; outline: none; cursor: pointer;
+    position: relative; z-index: 3;
+}
+#timeline-track {
+    position: absolute; left: 0; right: 0; top: 50%; height: 4px;
+    transform: translateY(-50%);
+    background: var(--track-bg); border-radius: 2px; pointer-events: none; z-index: 1;
+    overflow: visible;
+}
+#timeline::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 12px; height: 12px;
+    background: var(--accent); border-radius: 50%; cursor: pointer;
+}
+#timeline::-moz-range-track { background: transparent; border: none; height: 28px; }
+#timeline::-moz-range-thumb {
+    width: 12px; height: 12px; border: none;
+    background: var(--accent); border-radius: 50%; cursor: pointer;
+}
+#event-marker {
+    position: absolute; top: -10px; bottom: -10px; width: 2px;
+    background: var(--event-red); border-radius: 1px;
+    pointer-events: none; display: none; z-index: 2;
+}
+#time-display { font-size: 12px; color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+#speed-wrap { position: relative; }
+#speed-btn { min-width: 44px; text-align: center; font-size: 12px !important; }
+#speed-menu {
+    display: none; position: absolute; bottom: 100%; left: 50%;
+    transform: translateX(-50%); margin-bottom: 6px;
+    background: var(--speed-menu-bg); border: 1px solid var(--speed-menu-border); border-radius: 6px;
+    overflow: hidden; z-index: 50;
+}
+#speed-menu.open { display: flex; flex-direction: column; }
+#speed-menu button {
+    padding: 6px 16px; font-size: 12px; white-space: nowrap;
+    background: transparent; border: none; color: var(--text-muted); cursor: pointer;
+}
+#speed-menu button:hover { background: var(--bg-btn-hover); }
+#speed-menu button.active { color: var(--accent); }
+
+/* Loading overlay */
+#loading {
+    position: absolute; inset: 0;
+    background: var(--loading-bg); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px;
+    font-size: 16px; z-index: 100; color: var(--text-dim);
+}
+#loading.hidden { display: none; }
+#loading .loading-sub { font-size: 12px; color: var(--text-dimmest); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+    width: 28px; height: 28px; border: 3px solid var(--spinner-bg);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+/* Calendar */
+#calendar-view { flex: 1; padding: 24px; overflow-y: auto; display: flex; flex-direction: column; align-items: center; }
+#cal-nav { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+#cal-nav button { background: var(--bg-btn); border: none; color: var(--text-muted); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 16px; }
+#cal-nav button:hover { background: var(--bg-btn-hover); }
+#cal-month-label { font-size: 18px; color: var(--text-muted); min-width: 200px; text-align: center; }
+#cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; width: 100%; max-width: 700px; }
+.cal-header { text-align: center; font-size: 11px; color: var(--text-dimmer); padding: 8px 0; text-transform: uppercase; letter-spacing: 1px; }
+.cal-day {
+    aspect-ratio: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 4px;
+    background: var(--cal-day-bg); border-radius: 4px; font-size: 14px; color: var(--text-dimmest); position: relative;
+}
+.cal-day.other-month { background: transparent; color: var(--border-dim); }
+.cal-day.has-events { background: var(--cal-day-event); color: var(--text-muted); cursor: pointer; }
+.cal-day.has-events:hover { background: var(--cal-day-event-hover); }
+.cal-day.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cal-day .cal-count { font-size: 9px; color: var(--accent); font-weight: bold; }
+.cal-day .cal-dots { display: flex; gap: 3px; }
+.cal-dot { width: 4px; height: 4px; border-radius: 50%; }
+.cal-dot.sentry { background: var(--event-red); }
+.cal-dot.saved { background: var(--event-green); }
+.cal-dot.recent { background: var(--event-orange); }
+
+/* Map */
+#map-view { flex: 1; position: relative; }
+#map-container { width: 100%; height: 100%; }
+.leaflet-tile-pane { filter: var(--map-filter); }
+.leaflet-control-attribution { display: none; }
+</style>
+</head>
+<body>
+
+<div id="disconnected" class="hidden">
+    <div class="disc-title">No drive detected</div>
+    <div class="disc-sub">Connect a USB drive with a TeslaCam folder</div>
+    <div class="disc-spinner"></div>
+    <div class="disc-sub">Checking...</div>
+</div>
+
+<div id="sidebar">
+    <div id="sidebar-header">
+        <h2>Sentry Rewind</h2>
+        <div id="view-buttons">
+            <button class="view-btn active" data-view="list" title="List">&#9776;</button>
+            <button class="view-btn" data-view="calendar" title="Calendar">&#128197;</button>
+            <button class="view-btn" data-view="map" title="Map">&#127758;</button>
+        </div>
+    </div>
+    <div id="source-tabs">
+        <button class="source-tab active" data-source="SentryClips">Sentry<span class="tab-count"></span></button>
+        <button class="source-tab" data-source="SavedClips">Saved<span class="tab-count"></span></button>
+        <button class="source-tab" data-source="RecentClips">Drives<span class="tab-count"></span></button>
+    </div>
+    <div id="event-list"></div>
+</div>
+
+<div id="main">
+    <div id="welcome" class="main-panel active">
+        <div class="welcome-title">Sentry Rewind</div>
+        <div class="welcome-sub">Select a clip from the sidebar to begin playback</div>
+    </div>
+
+    <div id="viewer" class="main-panel">
+        <div id="loading" class="hidden">
+            <div class="spinner"></div>
+            <div id="loading-text">Loading...</div>
+            <div id="loading-sub" class="loading-sub"></div>
+        </div>
+        <div id="status" title="Warning: Displayed time is not perfectly accurate."></div>
+        <div id="camera-grid">
+            <div id="side-left">
+                <div class="camera-cell" data-cam="left_pillar">
+                    <span class="camera-label">Left Pillar</span>
+                    <video muted preload="auto"></video>
+                    <div class="buffering-overlay"><div class="mini-spinner"></div></div>
+                </div>
+                <div class="camera-cell" data-cam="left_repeater">
+                    <span class="camera-label">Left Repeater</span>
+                    <video muted preload="auto"></video>
+                    <div class="buffering-overlay"><div class="mini-spinner"></div></div>
+                </div>
+            </div>
+            <div id="center-col">
+                <div class="camera-cell" data-cam="front">
+                    <span class="camera-label">Front</span>
+                    <video muted preload="auto"></video>
+                    <div class="buffering-overlay"><div class="mini-spinner"></div></div>
+                </div>
+                <div class="camera-cell" data-cam="back">
+                    <span class="camera-label">Rear</span>
+                    <video muted preload="auto"></video>
+                    <div class="buffering-overlay"><div class="mini-spinner"></div></div>
+                </div>
+            </div>
+            <div id="side-right">
+                <div class="camera-cell" data-cam="right_pillar">
+                    <span class="camera-label">Right Pillar</span>
+                    <video muted preload="auto"></video>
+                    <div class="buffering-overlay"><div class="mini-spinner"></div></div>
+                </div>
+                <div class="camera-cell" data-cam="right_repeater">
+                    <span class="camera-label">Right Repeater</span>
+                    <video muted preload="auto"></video>
+                    <div class="buffering-overlay"><div class="mini-spinner"></div></div>
+                </div>
+            </div>
+        </div>
+        <div id="preview-row"><button id="restore-btn"><span id="restore-icon">&#9638;</span><span>All Cameras</span></button></div>
+        <div id="controls">
+            <button id="play-btn">&#9654;</button>
+            <div id="timeline-wrap">
+                <div id="timeline-track"><div id="event-marker"></div></div>
+                <input type="range" id="timeline" min="0" max="100" step="0.1" value="0">
+            </div>
+            <span id="time-display">0:00 / 0:00</span>
+            <div id="speed-wrap">
+                <button id="speed-btn">1x</button>
+                <div id="speed-menu"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="calendar-view" class="main-panel">
+        <div id="cal-nav">
+            <button id="cal-prev">&larr;</button>
+            <span id="cal-month-label"></span>
+            <button id="cal-next">&rarr;</button>
+        </div>
+        <div id="cal-grid"></div>
+    </div>
+
+    <div id="map-view" class="main-panel">
+        <div id="map-container"></div>
+    </div>
+</div>
+
+
+<script>
+// ==================== Constants & DOM refs ====================
+const CAMERAS = ["front", "back", "left_repeater", "right_repeater", "left_pillar", "right_pillar"];
+const playBtn = document.getElementById("play-btn");
+const timeline = document.getElementById("timeline");
+const timelineWrap = document.getElementById("timeline-wrap");
+const eventMarker = document.getElementById("event-marker");
+const timeDisplay = document.getElementById("time-display");
+const speedBtn = document.getElementById("speed-btn");
+const speedMenu = document.getElementById("speed-menu");
+const statusEl = document.getElementById("status");
+const loading = document.getElementById("loading");
+const welcome = document.getElementById("welcome");
+const viewer = document.getElementById("viewer");
+
+// ==================== Shared state ====================
+let allEvents = [];
+let activeSource = "SentryClips";
+let currentIdx = null;
+let currentEvent = null;
+let isPlaying = false;
+let syncing = false; // True while a multi-cam seek is in flight; blocks watchdog kicks.
+let speeds = [0.25, 0.5, 1, 1.5, 2, 4];
+let currentSpeed = 1;
+let currentView = "list";
+
+// ==================== Player state ====================
+// One video per camera, each fed by an HLS stream. Segment logic handled by hls.js.
+const camState = {};
+const refCam = "front";
+let knownDuration = 0; // True duration from HLS manifest, doesn't change on seek
+
+CAMERAS.forEach(cam => {
+    const cell = document.querySelector(`.camera-cell[data-cam="${cam}"]`);
+    const video = cell.querySelector("video");
+    camState[cam] = { video, hls: null };
+    video.addEventListener("waiting", () => cell.classList.add("buffering"));
+    video.addEventListener("seeking", () => cell.classList.add("buffering"));
+    video.addEventListener("playing", () => cell.classList.remove("buffering"));
+    video.addEventListener("canplay", () => cell.classList.remove("buffering"));
+    video.addEventListener("seeked", () => cell.classList.remove("buffering"));
+});
+
+// ==================== Helpers ====================
+function formatTime(s, ref) {
+    // ref = total duration, used to match formatting width
+    if (!isFinite(s)) s = 0;
+    const r = ref != null ? ref : s;
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = Math.floor(s % 60);
+    const rh = Math.floor(r / 3600);
+    const rm = Math.floor((r % 3600) / 60);
+    if (rh > 0) return h + ":" + m.toString().padStart(2, "0") + ":" + sec.toString().padStart(2, "0");
+    if (rm >= 10) return m.toString().padStart(2, "0") + ":" + sec.toString().padStart(2, "0");
+    return m + ":" + sec.toString().padStart(2, "0");
+}
+
+function formatTimestamp(ts) {
+    const [datePart, timePart] = ts.split("_");
+    const [y, mo, d] = datePart.split("-");
+    const [h, mi, s] = timePart.split("-");
+    const dt = new Date(y, mo - 1, d, h, mi, s);
+    const date = dt.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+    const time = dt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+    return date + " \u2014 " + time;
+}
+
+function parseDate(ts) { return ts.split("_")[0]; }
+
+function hlsUrl(eventIdx, camera) {
+    return `/api/events/${eventIdx}/hls/${camera}.m3u8`;
+}
+
+// ==================== View switching ====================
+function showView(view) {
+    currentView = view;
+    document.querySelectorAll(".main-panel").forEach(p => p.classList.remove("active"));
+    document.querySelectorAll(".view-btn").forEach(b => b.classList.toggle("active", b.dataset.view === view));
+    if (view === "list") {
+        if (currentIdx !== null) viewer.classList.add("active");
+        else welcome.classList.add("active");
+    } else if (view === "calendar") {
+        document.getElementById("calendar-view").classList.add("active");
+        renderCalendar();
+    } else if (view === "map") {
+        document.getElementById("map-view").classList.add("active");
+        setTimeout(() => initMap(), 50);
+    }
+}
+document.querySelectorAll(".view-btn").forEach(btn => {
+    btn.onclick = () => showView(btn.dataset.view);
+});
+
+// ==================== Event list ====================
+function renderEventList() {
+    const list = document.getElementById("event-list");
+    list.innerHTML = "";
+    allEvents.filter(ev => ev.source === activeSource).forEach(ev => {
+        const div = document.createElement("div");
+        div.className = "event-item";
+        if (ev.index === currentIdx) div.classList.add("active");
+        div.dataset.idx = ev.index;
+        const reason = ev.metadata?.reason?.replace(/_/g, " ") || "";
+        const city = ev.metadata?.city || "";
+        const mins = Math.round(ev.duration / 60);
+        let detail;
+        if (ev.source === "RecentClips") {
+            detail = "~" + mins + " min";
+        } else {
+            detail = (city ? city + " &middot; " : "") + "~" + mins + " min" + (reason ? "<br>" + reason : "");
+        }
+        const thumbHtml = ev.has_thumb ? '<img class="event-thumb" src="/api/events/' + ev.index + '/thumb" loading="lazy">' : '';
+        div.innerHTML = '<div class="event-item-inner">' + thumbHtml +
+            '<div class="event-text"><div class="event-time">' + formatTimestamp(ev.timestamp) + '</div><div class="event-detail">' + detail + '</div></div>' +
+            '<button class="event-open-btn" title="Open folder" data-idx="' + ev.index + '">&#128193;</button></div>';
+        div.querySelector(".event-open-btn").onclick = (e) => {
+            e.stopPropagation();
+            fetch("/api/events/" + ev.index + "/open", { method: "POST" });
+        };
+        div.onclick = () => { showView("list"); loadEvent(ev.index); };
+        list.appendChild(div);
+    });
+}
+
+document.querySelectorAll(".source-tab").forEach(tab => {
+    tab.onclick = () => {
+        document.querySelectorAll(".source-tab").forEach(t => t.classList.remove("active"));
+        tab.classList.add("active");
+        activeSource = tab.dataset.source;
+        renderEventList();
+    };
+});
+
+// ==================== Speed menu ====================
+speeds.forEach(s => {
+    const btn = document.createElement("button");
+    btn.textContent = s + "x";
+    if (s === currentSpeed) btn.classList.add("active");
+    btn.onclick = (e) => {
+        e.stopPropagation();
+        currentSpeed = s;
+        speedBtn.textContent = s + "x";
+        CAMERAS.forEach(c => { camState[c].video.playbackRate = s; });
+        speedMenu.querySelectorAll("button").forEach(b => b.classList.toggle("active", parseFloat(b.textContent) === s));
+        speedMenu.classList.remove("open");
+    };
+    speedMenu.appendChild(btn);
+});
+speedBtn.onclick = (e) => { e.stopPropagation(); speedMenu.classList.toggle("open"); };
+document.addEventListener("click", () => speedMenu.classList.remove("open"));
+
+// ==================== Drive detection & event loading ====================
+const discScreen = document.getElementById("disconnected");
+let driveWasConnected = false;
+
+async function checkDrive() {
+    try {
+        const resp = await fetch("/api/status");
+        const { connected } = await resp.json();
+        if (connected && !driveWasConnected) {
+            // Drive just connected — load events
+            discScreen.classList.add("hidden");
+            driveWasConnected = true;
+            const evResp = await fetch("/api/events");
+            allEvents = await evResp.json();
+            document.querySelectorAll(".source-tab").forEach(tab => {
+                const src = tab.dataset.source;
+                const count = allEvents.filter(e => e.source === src).length;
+                tab.querySelector(".tab-count").textContent = " (" + count + ")";
+            });
+            renderEventList();
+        } else if (!connected) {
+            discScreen.classList.remove("hidden");
+            driveWasConnected = false;
+            allEvents = [];
+            currentIdx = null;
+            currentEvent = null;
+        }
+    } catch(e) { /* server down */ }
+}
+
+checkDrive();
+setInterval(checkDrive, 3000);
+
+// ==================== HLS player ====================
+// Each camera gets an HLS playlist. hls.js handles segment transitions, buffering, seeking.
+//
+// Buffer sizing strategy: Chrome limits each SourceBuffer to ~150 MB. With 6 cameras
+// of H.264 dashcam video (~2-4 Mbps each), a 640s clip needs ~230 MB per camera.
+// We CANNOT buffer the entire clip. Instead, we buffer a reasonable window and let
+// hls.js manage eviction naturally. We keep the authoritative duration from the
+// playlist manifest and enforce it on the MediaSource so the video element never
+// reports a wrong duration after buffer eviction or error recovery.
+
+async function loadStreams(idx) {
+    const promises = CAMERAS.map(cam => new Promise(resolve => {
+        const v = camState[cam].video;
+        const url = hlsUrl(idx, cam);
+
+        if (camState[cam].hls) {
+            camState[cam].hls.destroy();
+            camState[cam].hls = null;
+        }
+
+        // Skip cameras not present on this event
+        if (currentEvent && currentEvent.cameras && !currentEvent.cameras.includes(cam)) {
+            v.removeAttribute("src");
+            resolve();
+            return;
+        }
+
+        if (Hls.isSupported()) {
+            const hls = new Hls({
+                // Buffer ~120s forward — enough for smooth playback but stays
+                // well within Chrome's ~150 MB per-SourceBuffer quota.
+                maxBufferLength: 120,
+                maxMaxBufferLength: 120,
+                // Let hls.js manage back-buffer eviction to stay within quota.
+                // Keeping 60s behind the playhead avoids re-fetching on small
+                // backward seeks while preventing quota pressure.
+                backBufferLength: 60,
+                maxBufferHole: 0.5,
+            });
+            hls.loadSource(url);
+            hls.attachMedia(v);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                v.playbackRate = currentSpeed;
+                resolve();
+            });
+
+            // Capture true duration from the playlist manifest.
+            // This is authoritative — the video element's duration may fluctuate
+            // as hls.js evicts buffer, but the playlist duration is fixed for VOD.
+            if (cam === refCam) {
+                hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
+                    if (data.details && data.details.totalduration) {
+                        knownDuration = data.details.totalduration;
+                        updateEventMarker(); // re-run now that we have real duration
+                    }
+                });
+            }
+
+            // Handle errors gracefully — especially BUFFER_FULL_ERROR which can
+            // trigger media source recovery and reset the duration.
+            hls.on(Hls.Events.ERROR, (event, data) => {
+                if (data.fatal) {
+                    console.warn(`[${cam}] Fatal HLS error:`, data.type, data.details);
+                    if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                        // recoverMediaError() detaches + reattaches media, creating
+                        // a new MediaSource. Let hls.js handle it.
+                        hls.recoverMediaError();
+                    } else {
+                        resolve(); // don't hang on truly unrecoverable errors
+                    }
+                }
+            });
+            camState[cam].hls = hls;
+        } else if (v.canPlayType("application/vnd.apple.mpegurl")) {
+            // Native HLS (Safari)
+            v.src = url;
+            v.addEventListener("loadedmetadata", () => {
+                v.playbackRate = currentSpeed;
+                resolve();
+            }, { once: true });
+            v.addEventListener("error", () => resolve(), { once: true });
+        } else {
+            resolve();
+        }
+    }));
+    await Promise.all(promises);
+}
+
+// ==================== Load event ====================
+async function loadEvent(idx) {
+    CAMERAS.forEach(cam => camState[cam].video.pause());
+
+    document.querySelectorAll(".event-item").forEach(el => el.classList.toggle("active", parseInt(el.dataset.idx) === idx));
+    const ev = allEvents.find(e => e.index === idx);
+    if (ev && ev.source !== activeSource) {
+        activeSource = ev.source;
+        document.querySelectorAll(".source-tab").forEach(t => t.classList.toggle("active", t.dataset.source === activeSource));
+        renderEventList();
+        document.querySelectorAll(".event-item").forEach(el => el.classList.toggle("active", parseInt(el.dataset.idx) === idx));
+    }
+
+    currentIdx = idx;
+    currentEvent = ev;
+    showView("list");
+    knownDuration = 0;
+
+    // HW3 doesn't record pillar cameras — switch to 2x2 grid
+    const grid = document.getElementById("camera-grid");
+    const hasPillars = ev.cameras && ev.cameras.includes("left_pillar");
+    grid.classList.toggle("no-pillars", !hasPillars);
+    loading.classList.remove("hidden");
+    document.getElementById("loading-text").textContent = "Loading...";
+    document.getElementById("loading-sub").textContent = "Streaming from drive";
+
+    // Scroll the sidebar to show the active event
+    const activeItem = document.querySelector(`.event-item[data-idx="${idx}"]`);
+    if (activeItem) activeItem.scrollIntoView({ block: "nearest", behavior: "smooth" });
+
+    await loadStreams(idx);
+
+    // Fetch accurate HLS-mapped trigger offset (uses ffprobe, already cached from playlist)
+    if (currentEvent.trigger_offset != null) {
+        try {
+            const resp = await fetch(`/api/events/${idx}/trigger_offset`);
+            const data = await resp.json();
+            currentEvent.trigger_offset = data.offset;
+        } catch (e) {}
+    }
+
+    loading.classList.add("hidden");
+    isPlaying = false;
+    playBtn.textContent = "\u25B6";
+    timeline.value = 0;
+    updateTimeDisplay();
+    updateEventMarker();
+    statusEl.textContent = currentEvent?.metadata?.city || "Ready";
+
+}
+
+// ==================== Event marker ====================
+function getDuration() {
+    // Manifest duration is authoritative; v.duration shifts with buffer eviction.
+    if (knownDuration > 0) return knownDuration;
+    const vDur = camState[refCam].video.duration;
+    return (isFinite(vDur) && vDur > 0) ? vDur : 0;
+}
+
+function updateEventMarker() {
+    if (!currentEvent || currentEvent.trigger_offset == null) {
+        eventMarker.style.display = "none";
+        return;
+    }
+    const dur = getDuration();
+    if (!dur) { camState[refCam].video.addEventListener("loadedmetadata", updateEventMarker, { once: true }); return; }
+    const frac = Math.min(currentEvent.trigger_offset / dur, 1.0);
+    // Match the slider thumb's effective range (thumb is 12px, 6px margin each side)
+    const thumbHalf = 6;
+    const trackWidth = eventMarker.parentElement.clientWidth;
+    const left = thumbHalf + frac * (trackWidth - thumbHalf * 2);
+    eventMarker.style.display = "block";
+    eventMarker.style.left = left + "px";
+}
+new ResizeObserver(() => updateEventMarker()).observe(document.getElementById("timeline-wrap"));
+
+// ==================== Playback controls ====================
+playBtn.onclick = () => {
+    if (currentIdx === null) return;
+    if (isPlaying) {
+        isPlaying = false;
+        playBtn.textContent = "\u25B6";
+        if (!syncing) CAMERAS.forEach(c => camState[c].video.pause());
+    } else {
+        isPlaying = true;
+        playBtn.textContent = "\u23F8";
+        // During a sync the cams are intentionally paused; the sync completion
+        // will honor the updated isPlaying intent.
+        if (!syncing) CAMERAS.forEach(c => camState[c].video.play().catch(() => {}));
+    }
+};
+
+function stepFrame(direction) {
+    const dt = direction / 24;
+    CAMERAS.forEach(c => { camState[c].video.pause(); camState[c].video.currentTime += dt; });
+    isPlaying = false;
+    playBtn.textContent = "\u25B6";
+}
+
+function waitAllSynced(timeoutMs = 5000) {
+    return Promise.all(CAMERAS.map(cam => new Promise(resolve => {
+        const v = camState[cam].video;
+        if (!v.readyState) return resolve();
+        const deadline = performance.now() + timeoutMs;
+        const check = () => {
+            if (!v.seeking && v.readyState >= 3) return resolve();
+            if (performance.now() > deadline) return resolve();
+            requestAnimationFrame(check);
+        };
+        requestAnimationFrame(check);
+    })));
+}
+
+// Multi-cam seek: pause all, seek all, wait for readyState, resume if playing.
+async function seekAllTo(t) {
+    if (syncing) return;
+    syncing = true;
+    CAMERAS.forEach(c => {
+        const v = camState[c].video;
+        if (!v.readyState) return;
+        v.pause();
+        v.currentTime = t;
+    });
+    await waitAllSynced();
+    syncing = false;
+    if (isPlaying) {
+        CAMERAS.forEach(c => { if (camState[c].video.readyState) camState[c].video.play().catch(() => {}); });
+    }
+}
+
+// ==================== Timeline ====================
+function updateTimeDisplay() {
+    const ref = camState[refCam].video;
+    const dur = getDuration();
+    if (!dur) return;
+    timeDisplay.textContent = formatTime(ref.currentTime, dur) + " / " + formatTime(dur);
+    updateStatusBar(ref.currentTime);
+}
+
+function updateStatusBar(currentTime) {
+    if (!currentEvent) return;
+    const ts = currentEvent.first_segment_ts || currentEvent.timestamp;
+    const [datePart, timePart] = ts.split("_");
+    const [y, mo, d] = datePart.split("-");
+    const [h, mi, s] = timePart.split("-");
+    const startDt = new Date(y, mo - 1, d, h, mi, s);
+    const currentDt = new Date(startDt.getTime() + currentTime * 1000);
+    const timeStr = currentDt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+    const street = currentEvent.metadata?.street || "";
+    const city = currentEvent.metadata?.city || "";
+    const location = [street, city].filter(Boolean).join(", ");
+    statusEl.textContent = (location ? location + " @ ~" : "~") + timeStr;
+}
+
+let seekingTimeline = false;
+
+function tick() {
+    if (currentIdx !== null) {
+        const ref = camState[refCam].video;
+        const dur = getDuration();
+        if (dur && !seekingTimeline && !syncing) {
+            timeline.value = (ref.currentTime / dur) * 100;
+            updateTimeDisplay();
+        }
+        // Watchdog: kick stalled cameras and correct drift. Throttle re-snaps to
+        // avoid thrashing hls.js's fragment loader.
+        if (isPlaying && !syncing) {
+            const refTime = ref.currentTime;
+            const now = performance.now();
+            CAMERAS.forEach(cam => {
+                const v = camState[cam].video;
+                if (!v.readyState) return;
+                if (v.paused && !v.ended && v.readyState >= 3) {
+                    v.play().catch(() => {});
+                }
+                if (cam !== refCam && !v.seeking && v.readyState >= 3 && Math.abs(v.currentTime - refTime) > 0.3) {
+                    const last = camState[cam]._lastSnap || 0;
+                    if (now - last > 500) {
+                        v.currentTime = refTime;
+                        camState[cam]._lastSnap = now;
+                    }
+                }
+            });
+        }
+    }
+    requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+// Seek via timeline: pause all while scrubbing, wait for sync on release.
+function beginScrub() {
+    if (currentIdx === null) return;
+    seekingTimeline = true;
+    syncing = true;
+    CAMERAS.forEach(c => { const v = camState[c].video; if (v.readyState) v.pause(); });
+}
+async function commitScrub() {
+    if (!seekingTimeline) return;
+    seekingTimeline = false;
+    await waitAllSynced();
+    syncing = false;
+    if (isPlaying) {
+        CAMERAS.forEach(c => { if (camState[c].video.readyState) camState[c].video.play().catch(() => {}); });
+    }
+}
+timeline.addEventListener("mousedown", beginScrub);
+timeline.addEventListener("touchstart", beginScrub);
+timeline.addEventListener("input", () => {
+    const dur = getDuration();
+    if (!dur) return;
+    const t = (timeline.value / 100) * dur;
+    CAMERAS.forEach(c => { camState[c].video.currentTime = t; });
+    updateTimeDisplay();
+});
+timeline.addEventListener("mouseup", commitScrub);
+timeline.addEventListener("touchend", commitScrub);
+timeline.addEventListener("change", commitScrub);
+
+// Keyboard shortcuts
+document.addEventListener("keydown", e => {
+    if (currentView !== "list" || currentIdx === null) return;
+    if (e.code === "Space") { e.preventDefault(); playBtn.click(); }
+    if (e.code === "ArrowLeft") {
+        e.preventDefault();
+        seekAllTo(Math.max(0, camState[refCam].video.currentTime - 5));
+    }
+    if (e.code === "ArrowRight") {
+        e.preventDefault();
+        const dur = getDuration();
+        seekAllTo(Math.min(dur || Infinity, camState[refCam].video.currentTime + 5));
+    }
+    if (e.key === "," || e.key === "<") { e.preventDefault(); stepFrame(-1); }
+    if (e.key === "." || e.key === ">") { e.preventDefault(); stepFrame(1); }
+});
+
+// ==================== Maximize / restore camera ====================
+let maximizedCam = null;
+const cameraGrid = document.getElementById("camera-grid");
+const previewRow = document.getElementById("preview-row");
+
+// Fixed layout: which cells go in which container, in order
+const gridLayout = {
+    "side-left": ["left_pillar", "left_repeater"],
+    "center-col": ["front", "back"],
+    "side-right": ["right_pillar", "right_repeater"],
+};
+
+function maximizeCamera(cam) {
+    if (maximizedCam === cam) { restoreGrid(); return; }
+
+    if (maximizedCam) restoreGrid();
+
+    maximizedCam = cam;
+    viewer.classList.add("maximized");
+
+    // Skip cameras not present on this event (e.g. pillar cams on HW3).
+    const availableCams = currentEvent?.cameras || CAMERAS;
+    document.querySelectorAll(".camera-cell").forEach(cell => {
+        if (cell.dataset.cam === cam) {
+            cell.classList.add("focused");
+            cameraGrid.appendChild(cell);
+        } else if (availableCams.includes(cell.dataset.cam)) {
+            previewRow.appendChild(cell);
+        }
+    });
+}
+
+function restoreGrid() {
+    maximizedCam = null;
+    viewer.classList.remove("maximized");
+
+    for (const [containerId, cams] of Object.entries(gridLayout)) {
+        const container = document.getElementById(containerId);
+        cams.forEach(cam => {
+            const cell = document.querySelector(`.camera-cell[data-cam="${cam}"]`);
+            cell.classList.remove("focused");
+            container.appendChild(cell);
+        });
+    }
+
+    if (currentIdx !== null && isPlaying) {
+        CAMERAS.forEach(cam => camState[cam].video.play().catch(() => {}));
+    }
+}
+
+document.querySelectorAll(".camera-cell").forEach(cell => {
+    cell.onclick = () => {
+        if (currentIdx === null) return;
+        maximizeCamera(cell.dataset.cam);
+    };
+});
+
+document.getElementById("restore-btn").onclick = () => restoreGrid();
+document.addEventListener("keydown", e => {
+    if (e.code === "Escape" && maximizedCam) { e.preventDefault(); restoreGrid(); }
+});
+
+// ==================== Calendar ====================
+let calYear, calMonth, calSelectedDate = null;
+(function() { const now = new Date(); calYear = now.getFullYear(); calMonth = now.getMonth(); })();
+
+function getEventDateRange() {
+    if (!allEvents.length) return { min: null, max: null };
+    const dates = allEvents.map(e => e.timestamp.split("_")[0]);
+    dates.sort();
+    return { min: dates[0], max: dates[dates.length - 1] };
+}
+
+const calPrev = document.getElementById("cal-prev");
+const calNext = document.getElementById("cal-next");
+calPrev.onclick = () => {
+    const range = getEventDateRange();
+    if (range.min) {
+        const [minY, minM] = range.min.split("-").map(Number);
+        if (calYear === minY && calMonth === minM - 1) return;
+    }
+    calMonth--;
+    if (calMonth < 0) { calMonth = 11; calYear--; }
+    renderCalendar();
+};
+calNext.onclick = () => {
+    const now = new Date();
+    if (calYear === now.getFullYear() && calMonth === now.getMonth()) return;
+    calMonth++;
+    if (calMonth > 11) { calMonth = 0; calYear++; }
+    renderCalendar();
+};
+
+function renderCalendar() {
+    const label = document.getElementById("cal-month-label");
+    label.textContent = new Date(calYear, calMonth, 1).toLocaleDateString(undefined, { year: "numeric", month: "long" });
+
+    // Dim arrows at boundaries
+    const range = getEventDateRange();
+    const now = new Date();
+    if (range.min) {
+        const [minY, minM] = range.min.split("-").map(Number);
+        calPrev.style.opacity = (calYear === minY && calMonth === minM - 1) ? "0.3" : "1";
+    }
+    calNext.style.opacity = (calYear === now.getFullYear() && calMonth === now.getMonth()) ? "0.3" : "1";
+
+    const dateMap = {};
+    allEvents.forEach(ev => {
+        const d = parseDate(ev.timestamp);
+        if (!dateMap[d]) dateMap[d] = [];
+        dateMap[d].push(ev);
+    });
+
+    const grid = document.getElementById("cal-grid");
+    grid.innerHTML = "";
+    ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].forEach(d => {
+        const h = document.createElement("div"); h.className = "cal-header"; h.textContent = d; grid.appendChild(h);
+    });
+
+    const firstDay = new Date(calYear, calMonth, 1).getDay();
+    const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+    const daysInPrevMonth = new Date(calYear, calMonth, 0).getDate();
+
+    for (let i = firstDay - 1; i >= 0; i--) {
+        const cell = document.createElement("div"); cell.className = "cal-day other-month"; cell.textContent = daysInPrevMonth - i; grid.appendChild(cell);
+    }
+    for (let d = 1; d <= daysInMonth; d++) {
+        const cell = document.createElement("div");
+        const dateStr = calYear + "-" + String(calMonth + 1).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+        const eventsOnDay = dateMap[dateStr] || [];
+        cell.className = "cal-day";
+        if (calSelectedDate === dateStr) cell.classList.add("selected");
+        if (eventsOnDay.length > 0) {
+            cell.classList.add("has-events");
+            const hasSentry = eventsOnDay.some(e => e.source === "SentryClips");
+            const hasSaved = eventsOnDay.some(e => e.source === "SavedClips");
+            const hasRecent = eventsOnDay.some(e => e.source === "RecentClips");
+            let dots = '<div class="cal-dots">';
+            if (hasSentry) dots += '<div class="cal-dot sentry"></div>';
+            if (hasSaved) dots += '<div class="cal-dot saved"></div>';
+            if (hasRecent) dots += '<div class="cal-dot recent"></div>';
+            dots += '</div>';
+            cell.innerHTML = d + '<div class="cal-count">' + eventsOnDay.length + '</div>' + dots;
+            cell.onclick = () => { calSelectedDate = dateStr; renderCalendar(); renderEventListForDate(dateStr); };
+        } else { cell.textContent = d; }
+        grid.appendChild(cell);
+    }
+    const totalCells = firstDay + daysInMonth;
+    const remaining = (7 - (totalCells % 7)) % 7;
+    for (let i = 1; i <= remaining; i++) {
+        const cell = document.createElement("div"); cell.className = "cal-day other-month"; cell.textContent = i; grid.appendChild(cell);
+    }
+}
+
+function renderEventListForDate(dateStr) {
+    const list = document.getElementById("event-list");
+    list.innerHTML = "";
+    allEvents.filter(ev => parseDate(ev.timestamp) === dateStr).forEach(ev => {
+        const div = document.createElement("div");
+        div.className = "event-item";
+        if (ev.index === currentIdx) div.classList.add("active");
+        const reason = ev.metadata?.reason?.replace(/_/g, " ") || "";
+        const city = ev.metadata?.city || "";
+        const mins = Math.round(ev.duration / 60);
+        const srcColor = ev.source === "SentryClips" ? "#ff4a4a" : ev.source === "SavedClips" ? "#4aff4a" : "#ffaa4a";
+        const srcLabel = ev.source === "SentryClips" ? "Sentry" : ev.source === "SavedClips" ? "Saved" : "Drive";
+        div.innerHTML =
+            '<div class="event-time">' + formatTimestamp(ev.timestamp) + '</div>' +
+            '<div class="event-detail"><span style="color:' + srcColor + '">' + srcLabel + '</span> &middot; ' +
+            (city ? city + " &middot; " : "") + "~" + mins + " min" + (reason ? "<br>" + reason : "") + '</div>';
+        div.onclick = () => { showView("list"); loadEvent(ev.index); };
+        list.appendChild(div);
+    });
+}
+
+// ==================== Map ====================
+let map = null, mapMarkers = [];
+function initMap() {
+    if (map) { map.invalidateSize(); return; }
+    map = L.map("map-container").setView([47.7, -122.2], 11);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
+    updateMapMarkers();
+}
+function updateMapMarkers() {
+    if (!map) return;
+    mapMarkers.forEach(m => map.removeLayer(m)); mapMarkers = [];
+    const locGroups = {};
+    allEvents.forEach(ev => {
+        if (!ev.metadata?.est_lat || !ev.metadata?.est_lon) return;
+        const lat = parseFloat(ev.metadata.est_lat), lon = parseFloat(ev.metadata.est_lon);
+        if (isNaN(lat) || isNaN(lon)) return;
+        const key = lat.toFixed(3) + "," + lon.toFixed(3);
+        if (!locGroups[key]) locGroups[key] = { lat, lon, events: [] };
+        locGroups[key].events.push(ev);
+    });
+    const bounds = [];
+    Object.values(locGroups).forEach(group => {
+        bounds.push([group.lat, group.lon]);
+        const evList = group.events, count = evList.length;
+        const city = evList[0].metadata?.city || "";
+        let html = '<div style="max-height:200px;overflow-y:auto;font-size:12px;">';
+        html += '<strong>' + (city || "Unknown") + '</strong> (' + count + ')<br><br>';
+        evList.slice(0, 20).forEach(ev => {
+            html += '<a href="#" style="color:#4a9eff;text-decoration:none;" data-ev-idx="' + ev.index + '">' + formatTimestamp(ev.timestamp) + '</a><br>';
+        });
+        html += '</div>';
+        const marker = L.marker([group.lat, group.lon]).addTo(map);
+        marker.bindPopup(html, { maxWidth: 300 });
+        marker.on("popupopen", () => {
+            marker.getPopup().getElement().querySelectorAll("a[data-ev-idx]").forEach(a => {
+                a.onclick = (e) => { e.preventDefault(); showView("list"); loadEvent(parseInt(a.dataset.evIdx)); };
+            });
+        });
+        mapMarkers.push(marker);
+    });
+    if (bounds.length) map.fitBounds(bounds, { padding: [40, 40] });
+}
+</script>
+</body>
+</html>
